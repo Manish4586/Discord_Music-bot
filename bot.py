@@ -1,9 +1,15 @@
 # bot.py
+import asyncio
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    print("[boot] uvloop enabled")
+except Exception as e:
+    print(f"[boot] uvloop not in use: {e}")
 import os
 import re
 import json
 import time
-import asyncio
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -25,6 +31,9 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 DATA_DIR = os.path.expanduser("/home/manish4586/discord-music")
 os.makedirs(DATA_DIR, exist_ok=True)
 STATS_PATH = os.path.join(DATA_DIR, "stats.json")
+
+CACHE_DIR = os.path.join(DATA_DIR, "cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # ========= Bot setup =========
 COMMAND_PREFIX = "!"
@@ -242,6 +251,7 @@ YDL_OPTS = {
     "no_warnings":True,
     "noplaylist":True,
     "restrictfilenames":True,
+    "cachedir": CACHE_DIR,
     "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
     "postprocessors":[
         {"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"},
@@ -388,13 +398,13 @@ async def play(ctx,*,query):
         with YoutubeDL({"quiet":True}) as y:
             info = y.extract_info(f"ytsearch1:{query}",download=False)
         query = info["entries"][0]["webpage_url"]
-
     track = await build_track(ctx, query, ctx.author.id)
     p.queue.append(track)
-    await ctx.send(embed=ui("➕ Queued", f"**{track.title}**"))
-
     if not p.voice.is_playing() and not p.voice.is_paused():
         await p.loop(ctx)
+    else:
+        position = len(p.queue)
+        await ctx.send(embed=ui("➕ Added to Queue", f"**{track.title}**\nPosition: `{position}`"))
 
 @bot.command(name="p")
 async def alias_p(ctx,*,query):

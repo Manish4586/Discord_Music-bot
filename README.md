@@ -92,7 +92,7 @@ sudo apt update && sudo apt upgrade -y
 
 sudo apt install -y ffmpeg python3 python3-pip
 
-pip3 install -U yt-dlp discord.py python-dotenv
+pip3 install -U yt-dlp discord.py python-dotenv uvloop
 
 mkdir -p ~/discord-music/music
 
