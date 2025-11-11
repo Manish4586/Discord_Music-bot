@@ -13,6 +13,11 @@ A Discord Music Bot optimized for **Raspberry Pi 5**, designed to run **24/7** w
   <a href="https://discord.com/oauth2/authorize?client_id=1437186522721026149&scope=bot&permissions=3147776">
     <img src="https://img.shields.io/badge/Invite%20Bot%20to%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white">
   </a>
+  <br>
+  <br>
+<a href="https://top.gg/bot/1437186522721026149">
+  <img src="https://top.gg/api/widget/1437186522721026149.svg">
+</a>
 </p>
 
 

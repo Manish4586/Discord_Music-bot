@@ -319,7 +319,7 @@ async def _wait_ready():
 
 @tasks.loop(hours=1)
 async def cleanup_cache():
-    cutoff = time.time()-86400
+    cutoff = time.time() - (60 * 24 * 3600)
     for f in os.listdir(DOWNLOAD_DIR):
         if f.endswith(".mp3"):
             p = os.path.join(DOWNLOAD_DIR,f)
