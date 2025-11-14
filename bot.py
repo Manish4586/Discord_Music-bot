@@ -266,32 +266,46 @@ async def build_track(ctx, query, uid):
     msg = await ctx.send(embed=ui("🔍 Fetching Audio...", f"**{query}**"))
 
     def probe():
-        with YoutubeDL({"quiet":True,"skip_download":True}) as y:
+        with YoutubeDL({"quiet": True, "skip_download": True}) as y:
             return y.extract_info(query, download=False)
+
     info = await loop.run_in_executor(None, probe)
 
     if "entries" in info:
         info = info["entries"][0]
 
     vid = info["id"]
-    title = info.get("title","Unknown")
-    url = info.get("webpage_url",query)
+    title = info.get("title", "Unknown")
+    url = info.get("webpage_url", query)
     file = os.path.join(DOWNLOAD_DIR, f"{vid}.mp3")
     thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
     duration = info.get("duration")
 
     if os.path.exists(file):
         await msg.edit(embed=ui("🎶 Already Cached", f"**{title}** is ready."))
-        return Track(url,title,vid,file,thumb,uid,duration)
+        await asyncio.sleep(3)
+        try:
+            await msg.delete()
+        except:
+            pass
+        return Track(url, title, vid, file, thumb, uid, duration)
 
     await msg.edit(embed=ui("🎧 Processing...", f"**{title}**"))
+
     def dl():
         with YoutubeDL(YDL_OPTS) as y:
             y.download([url])
+
     await loop.run_in_executor(None, dl)
 
     await msg.edit(embed=ui("✅ Ready", f"**{title}**"))
-    return Track(url,title,vid,file,thumb,uid,duration)
+    await asyncio.sleep(3)
+    try:
+        await msg.delete()
+    except:
+        pass
+
+    return Track(url, title, vid, file, thumb, uid, duration)
 
 # ========= Panel Refresh & Playtime =========
 @tasks.loop(seconds=5)
@@ -307,7 +321,13 @@ async def update_panels_and_tick_time():
                 played = p.progress()
                 total = p.current.duration or 0
                 frac = played/total if total else 0
-                embed = ui("▶️ Now Playing", f"**{p.current.title}**\n\n`{fmt_mmss(played)} / {fmt_mmss(total)}`\n{bar(frac)}")
+                embed = ui(
+                    "▶️ Now Playing",
+                    f"**{p.current.title}**\n"
+                    f"Requested by <@{p.current.requested_by_id}>\n\n"
+                    f"`{fmt_mmss(played)} / {fmt_mmss(total)}`\n"
+                    f"{bar(frac)}"
+                )
                 embed.set_thumbnail(url=p.current.thumb)
                 await p.panel.edit(embed=embed)
             except:
@@ -506,9 +526,12 @@ async def now_playing(ctx):
     total = p.current.duration or 0
     frac = (played / total) if total else 0
     embed = ui(
-        "🎵 Now Playing",
-        f"**{p.current.title}**\n\n`{fmt_mmss(played)} / {fmt_mmss(total)}`\n{bar(frac)}"
-    )
+        "▶️ Now Playing",
+        f"**{p.current.title}**\n"
+        f"Requested by <@{p.current.requested_by_id}>\n\n"
+        f"`{fmt_mmss(played)} / {fmt_mmss(total)}`\n"
+        f"{bar(frac)}"
+        )
     embed.set_thumbnail(url=p.current.thumb)
 
     p.panel = await ctx.send(embed=embed)
@@ -531,8 +554,23 @@ async def server(ctx):
 @bot.command()
 async def stats(ctx, user: Optional[discord.Member]=None):
     user = user or ctx.author
-    u = STORED["users"].get(str(user.id),{"time":0,"songs":0})
-    desc = f"User: {user.mention}\nTime listened: **{fmt_time(u['time'])}**\nSongs requested: **{u['songs']}**"
+    uid = str(user.id)
+
+    u = STORED["users"].get(uid, {"time": 0, "songs": 0})
+
+    # Count unique songs listened by this user
+    unique_song_count = 0
+    for vid, data in STORED.get("songs", {}).items():
+        if user.id in data.get("users", []):
+            unique_song_count += 1
+
+    desc = (
+        f"User: {user.mention}\n"
+        f"Time listened: **{fmt_time(u['time'])}**\n"
+        f"Unique songs listened: **{unique_song_count}**\n"
+        f"Songs requested: **{u['songs']}**"
+    )
+
     await ctx.send(embed=ui("📈 Stats", desc))
 
 @bot.command(name="leaderboard", aliases=["lb"])
