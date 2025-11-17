@@ -246,7 +246,7 @@ def getp(g):
 
 # ========= yt-dlp =========
 YDL_OPTS = {
-    "format":"bestaudio/best",
+    "format":"m4a/bestaudio/best",
     "quiet":True,
     "no_warnings":True,
     "noplaylist":True,
@@ -254,8 +254,10 @@ YDL_OPTS = {
     "cachedir": CACHE_DIR,
     "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
     "postprocessors":[
-        {"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"},
-        {"key":"FFmpegMetadata"}
+        {
+         "key": "FFmpegVideoRemuxer",
+         "preferedformat": "m4a"
+        }
     ]
 }
 YOUTUBE_URL_RE = re.compile("(youtube|youtu.be)")
@@ -263,6 +265,22 @@ search_results = {}
 
 async def build_track(ctx, query, uid):
     loop = asyncio.get_event_loop()
+    m = re.search(r"(v=|youtu.be/)([A-Za-z0-9_-]{6,20})", query)
+    video_id = m.group(2) if m else None
+
+    if video_id:
+        file = os.path.join(DOWNLOAD_DIR, f"{video_id}.m4a")
+        if os.path.exists(file):
+            with YoutubeDL({"quiet": True, "skip_download": True}) as y:
+                info = y.extract_info(f"https://youtu.be/{video_id}", download=False)
+
+            title = info.get("title", "Unknown")
+            thumb = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+            duration = info.get("duration")
+            url = info.get("webpage_url")
+
+            return Track(url, title, video_id, file, thumb, uid, duration)
+
     msg = await ctx.send(embed=ui("🔍 Fetching Audio...", f"**{query}**"))
 
     def probe():
@@ -277,17 +295,14 @@ async def build_track(ctx, query, uid):
     vid = info["id"]
     title = info.get("title", "Unknown")
     url = info.get("webpage_url", query)
-    file = os.path.join(DOWNLOAD_DIR, f"{vid}.mp3")
+    file = os.path.join(DOWNLOAD_DIR, f"{vid}.m4a")
     thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
     duration = info.get("duration")
 
     if os.path.exists(file):
         await msg.edit(embed=ui("🎶 Already Cached", f"**{title}** is ready."))
-        await asyncio.sleep(3)
-        try:
-            await msg.delete()
-        except:
-            pass
+        await asyncio.sleep(2)
+        await msg.delete()
         return Track(url, title, vid, file, thumb, uid, duration)
 
     await msg.edit(embed=ui("🎧 Processing...", f"**{title}**"))
@@ -299,16 +314,13 @@ async def build_track(ctx, query, uid):
     await loop.run_in_executor(None, dl)
 
     await msg.edit(embed=ui("✅ Ready", f"**{title}**"))
-    await asyncio.sleep(3)
-    try:
-        await msg.delete()
-    except:
-        pass
+    await asyncio.sleep(2)
+    await msg.delete()
 
     return Track(url, title, vid, file, thumb, uid, duration)
 
 # ========= Panel Refresh & Playtime =========
-@tasks.loop(seconds=5)
+@tasks.loop(seconds=3)
 async def update_panels_and_tick_time():
     for p in players.values():
         if not p.voice or not p.current: continue
@@ -323,7 +335,7 @@ async def update_panels_and_tick_time():
                 frac = played/total if total else 0
                 embed = ui(
                     "▶️ Now Playing",
-                    f"**{p.current.title}**\n"
+                    f"**{p.current.title}**\n\n"
                     f"Requested by <@{p.current.requested_by_id}>\n\n"
                     f"`{fmt_mmss(played)} / {fmt_mmss(total)}`\n"
                     f"{bar(frac)}"
@@ -341,7 +353,7 @@ async def _wait_ready():
 async def cleanup_cache():
     cutoff = time.time() - (60 * 24 * 3600)
     for f in os.listdir(DOWNLOAD_DIR):
-        if f.endswith(".mp3"):
+        if f.endswith(".m4a"):
             p = os.path.join(DOWNLOAD_DIR,f)
             if os.path.getmtime(p)<cutoff:
                 try: os.remove(p)
@@ -359,6 +371,25 @@ async def on_ready():
     cleanup_cache.start()
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="YouTube Music"))
 
+@bot.listen("on_message")
+async def warn_uppercase_commands(msg: discord.Message):
+    if msg.author.bot:
+        return
+
+    if not msg.content.startswith("!"):
+        return
+
+    raw = msg.content.split()[0]
+    cmd = raw[1:]
+    if not cmd:
+        return
+
+    if cmd.lower() != cmd:
+        await msg.channel.send(
+            embed=ui("⚠️ Lowercase Commands Only", f"Use: `!{cmd.lower()}`"),
+            delete_after=8
+        )
+
 # ========= Commands =========
 @bot.command()
 async def help(ctx):
@@ -375,6 +406,8 @@ async def help(ctx):
 !stop / !s
 !repeat / !r
 !repeatall / !ra
+!pause / !pa
+!resume / !re
 
 **Voice**
 !leave / !d
@@ -535,6 +568,40 @@ async def now_playing(ctx):
     embed.set_thumbnail(url=p.current.thumb)
 
     p.panel = await ctx.send(embed=embed)
+
+@bot.command(name="pause", aliases=["pa"])
+async def pause_cmd(ctx):
+    p = getp(ctx.guild)
+
+    if not p.voice or not p.voice.is_connected():
+        return await ctx.send(embed=ui("⚠️ Not connected", "Bot is not in a voice channel."))
+
+    if p.voice.is_paused():
+        return await ctx.send(embed=ui("⏸️ Already Paused"))
+
+    if not p.voice.is_playing():
+        return await ctx.send(embed=ui("⚠️ Nothing to pause."))
+
+    p.voice.pause()
+    p.pause_t = time.time()
+    await ctx.send(embed=ui("⏸️ Paused", f"**{p.current.title}**"))
+
+
+@bot.command(name="resume", aliases=["re"])
+async def resume_cmd(ctx):
+    p = getp(ctx.guild)
+
+    if not p.voice or not p.voice.is_connected():
+        return await ctx.send(embed=ui("⚠️ Not connected", "Bot is not in a voice channel."))
+
+    if not p.voice.is_paused():
+        return await ctx.send(embed=ui("▶️ Not Paused"))
+
+    p.paused_accum += time.time() - p.pause_t
+    p.pause_t = None
+
+    p.voice.resume()
+    await ctx.send(embed=ui("▶️ Resumed", f"**{p.current.title}**"))
 
 # ========= Stats =========
 @bot.command()
