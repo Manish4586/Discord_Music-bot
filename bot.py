@@ -265,6 +265,7 @@ search_results = {}
 
 async def build_track(ctx, query, uid):
     loop = asyncio.get_event_loop()
+
     m = re.search(r"(v=|youtu.be/)([A-Za-z0-9_-]{6,20})", query)
     video_id = m.group(2) if m else None
 
@@ -274,10 +275,11 @@ async def build_track(ctx, query, uid):
 
         if os.path.exists(file) and os.path.exists(meta_path):
             info = json.load(open(meta_path))
+
             title = info.get("title", "Unknown")
-            duration = info.get("duration")
             url = info.get("webpage_url")
-            thumb = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+            duration = info.get("duration")
+            thumb = info.get("thumbnail")
 
             return Track(url, title, video_id, file, thumb, uid, duration)
 
@@ -301,7 +303,14 @@ async def build_track(ctx, query, uid):
     meta_path = os.path.join(DOWNLOAD_DIR, f"{vid}.json")
 
     if os.path.exists(file):
-        json.dump(info, open(meta_path, "w"))
+        s_meta = {
+            "id": vid,
+            "title": title,
+            "duration": duration,
+            "webpage_url": url,
+            "thumbnail": thumb
+        }
+        json.dump(s_meta, open(meta_path, "w"))
         await msg.edit(embed=ui("🎶 Already Cached", f"**{title}** is ready."))
         await asyncio.sleep(2)
         await msg.delete()
@@ -315,7 +324,14 @@ async def build_track(ctx, query, uid):
 
     await loop.run_in_executor(None, dl)
 
-    json.dump(info, open(meta_path, "w"))
+    s_meta = {
+        "id": vid,
+        "title": title,
+        "duration": duration,
+        "webpage_url": url,
+        "thumbnail": thumb
+    }
+    json.dump(s_meta, open(meta_path, "w"))
 
     await msg.edit(embed=ui("✅ Ready", f"**{title}**"))
     await asyncio.sleep(2)
