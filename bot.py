@@ -270,14 +270,14 @@ async def build_track(ctx, query, uid):
 
     if video_id:
         file = os.path.join(DOWNLOAD_DIR, f"{video_id}.m4a")
-        if os.path.exists(file):
-            with YoutubeDL({"quiet": True, "skip_download": True}) as y:
-                info = y.extract_info(f"https://youtu.be/{video_id}", download=False)
+        meta_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.json")
 
+        if os.path.exists(file) and os.path.exists(meta_path):
+            info = json.load(open(meta_path))
             title = info.get("title", "Unknown")
-            thumb = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
             duration = info.get("duration")
             url = info.get("webpage_url")
+            thumb = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
             return Track(url, title, video_id, file, thumb, uid, duration)
 
@@ -298,8 +298,10 @@ async def build_track(ctx, query, uid):
     file = os.path.join(DOWNLOAD_DIR, f"{vid}.m4a")
     thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
     duration = info.get("duration")
+    meta_path = os.path.join(DOWNLOAD_DIR, f"{vid}.json")
 
     if os.path.exists(file):
+        json.dump(info, open(meta_path, "w"))
         await msg.edit(embed=ui("🎶 Already Cached", f"**{title}** is ready."))
         await asyncio.sleep(2)
         await msg.delete()
@@ -312,6 +314,8 @@ async def build_track(ctx, query, uid):
             y.download([url])
 
     await loop.run_in_executor(None, dl)
+
+    json.dump(info, open(meta_path, "w"))
 
     await msg.edit(embed=ui("✅ Ready", f"**{title}**"))
     await asyncio.sleep(2)
