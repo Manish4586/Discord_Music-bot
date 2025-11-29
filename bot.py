@@ -17,6 +17,11 @@ import discord
 from discord.ext import commands, tasks
 from yt_dlp import YoutubeDL
 from dotenv import load_dotenv
+from aiohttp import web
+import subprocess
+import asyncio
+
+API_PORT = 8810
 
 # ========= Load token =========
 load_dotenv()
@@ -98,6 +103,20 @@ def get_load():
     except:
         return 0,0,0
 
+def get_temp():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            t = int(f.read().strip()) / 1000
+            return t
+    except:
+        pass
+
+    try:
+        out = subprocess.check_output(["vcgencmd", "measure_temp"], text=True)
+        return float(out.replace("temp=", "").replace("'C", "").strip())
+    except:
+        return None
+
 # ========= Stats Storage (SAFE, FIXED) =========
 def load_stats():
     base = {"total_songs":0, "total_play_time":0.0, "users":{}, "songs":{}}
@@ -174,6 +193,8 @@ class Player:
         self.start_t = None
         self.pause_t = None
         self.paused_accum = 0
+        self.last_paused_track = None
+        self.last_paused_position = 0
 
     async def ensure_voice(self, ctx):
         if not ctx.author.voice:
@@ -388,6 +409,7 @@ async def _wait_ready2():
 async def on_ready():
     print("Logged in as", bot.user)
     update_panels_and_tick_time.start()
+    await start_api()
     cleanup_cache.start()
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="YouTube Music"))
 
@@ -433,11 +455,12 @@ async def help(ctx):
 !leave / !d
 
 **Stats**
+!ping
 !server
 !stats
 !leaderboard / !lb
 """
-    await ctx.send(embed=ui("📘 Commands", cmds))
+    await ctx.send(embed=ui("📘 Music Bot Commands", cmds))
 
 @bot.command()
 async def search(ctx,*,query):
@@ -535,16 +558,26 @@ async def repeatall(ctx):
 async def alias_ra(ctx):
     await ctx.invoke(bot.get_command("repeatall"))
 
-@bot.command()
+@bot.command(name="leave")
 async def leave(ctx):
     p = getp(ctx.guild)
+
+    if p.current and p.voice:
+        p.last_paused_track = p.current
+        p.last_paused_position = p.progress()
+    else:
+        p.last_paused_track = None
+        p.last_paused_position = 0
+
     if p.voice:
         await p.voice.disconnect(force=True)
-        p.voice = None
-        p.current = None
-        p.panel = None
-        await ctx.send(embed=ui("👋 Left Voice"))
-        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="YouTube Music"))
+
+    p.voice = None
+    p.panel = None
+
+    await ctx.send(embed=ui("👋 Left Voice"))
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.listening, name="YouTube Music"))
 
 @bot.command(name="d")
 async def alias_d(ctx):
@@ -594,33 +627,57 @@ async def pause_cmd(ctx):
     p = getp(ctx.guild)
 
     if not p.voice or not p.voice.is_connected():
-        return await ctx.send(embed=ui("⚠️ Not connected", "Bot is not in a voice channel."))
+        return await ctx.send(embed=ui("⚠️ Not connected"))
+
+    if not p.current:
+        return await ctx.send(embed=ui("⚠️ Nothing is playing."))
 
     if p.voice.is_paused():
         return await ctx.send(embed=ui("⏸️ Already Paused"))
 
-    if not p.voice.is_playing():
-        return await ctx.send(embed=ui("⚠️ Nothing to pause."))
-
     p.voice.pause()
     p.pause_t = time.time()
-    await ctx.send(embed=ui("⏸️ Paused", f"**{p.current.title}**"))
+    p.last_paused_track = p.current
+    p.last_paused_position = p.progress()
 
+    await ctx.send(embed=ui("⏸️ Paused", f"**{p.current.title}**"))
 
 @bot.command(name="resume", aliases=["re"])
 async def resume_cmd(ctx):
     p = getp(ctx.guild)
 
     if not p.voice or not p.voice.is_connected():
-        return await ctx.send(embed=ui("⚠️ Not connected", "Bot is not in a voice channel."))
+        if not ctx.author.voice:
+            return await ctx.send(embed=ui("⚠️ Join a voice channel first."))
+
+        p.voice = await ctx.author.voice.channel.connect(self_deaf=True)
+
+        if p.last_paused_track:
+            t = p.last_paused_track
+            pos = p.last_paused_position
+
+            source = discord.FFmpegPCMAudio(
+                t.file,
+                before_options=f"-ss {int(pos)}",
+                options="-vn"
+            )
+
+            p.voice.play(source)
+            p.start_t = time.time() - pos
+            p.pause_t = None
+
+            p.current = t
+            return await ctx.send(embed=ui("▶️ Resumed", f"**{t.title}**"))
+
+        return await ctx.send(embed=ui("⚠️ Nothing to resume."))
 
     if not p.voice.is_paused():
-        return await ctx.send(embed=ui("▶️ Not Paused"))
+        return await ctx.send(embed=ui("⚠️ Not paused."))
 
     p.paused_accum += time.time() - p.pause_t
     p.pause_t = None
-
     p.voice.resume()
+
     await ctx.send(embed=ui("▶️ Resumed", f"**{p.current.title}**"))
 
 # ========= Stats =========
@@ -629,10 +686,12 @@ async def server(ctx):
     up = get_uptime_sec()
     total,used,free = get_mem()
     l1,l5,l15 = get_load()
+    temp = get_temp()
     desc = (
         f"Uptime: **{fmt_time(up)}**\n"
         f"RAM: **{total/1e9:.2f} GB total**, **{used/1e9:.2f} GB used**, **{free/1e9:.2f} GB free**\n"
         f"Load avg: **{l1:.2f} {l5:.2f} {l15:.2f}**\n"
+        f"CPU Temp: **{temp:.1f}°C**\n"
         f"Music time: **{fmt_time(STORED['total_play_time'])}**\n"
         f"Songs played: **{STORED['total_songs']}**"
     )
@@ -690,6 +749,63 @@ async def leaderboard_cmd(ctx):
     desc += "\n\n**Top Songs (Unique Listeners):**\n" + ("\n".join(song_lines) or "_no data_")
     await ctx.send(embed=ui("🏆 Leaderboard", desc))
 
+@bot.command()
+async def ping(ctx):
+    embed = ui("🏓 Pong!", "Running ping & speed test… please wait ⏳")
+    msg = await ctx.send(embed=embed)
+
+    await asyncio.sleep(0.5)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "speedtest-cli",
+            "--simple",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout_b, stderr_b = await proc.communicate()
+
+        stdout = stdout_b.decode("utf-8", errors="ignore")
+        stderr = stderr_b.decode("utf-8", errors="ignore")
+
+        if stderr:
+            raise Exception(stderr)
+
+        ping_ms = "?"
+        download = "?"
+        upload = "?"
+
+        for line in stdout.splitlines():
+            if line.startswith("Ping:"):
+                ping_ms = line.replace("Ping:", "").strip()
+            elif line.startswith("Download:"):
+                download = line.replace("Download:", "").strip()
+            elif line.startswith("Upload:"):
+                upload = line.replace("Upload:", "").strip()
+
+        result_text = (
+            f"🏓 **Ping:** `{ping_ms}`\n"
+            f"⬇️ **Download:** `{download}`\n"
+            f"⬆️ **Upload:** `{upload}`\n"
+        )
+
+        final_embed = ui(
+            "📡 Server Network Speed",
+            result_text,
+            color=0x00FF00
+        )
+
+        await msg.edit(embed=final_embed)
+
+    except Exception as e:
+        err_embed = ui(
+            "❌ Speedtest Failed",
+            f"```{str(e)}```",
+            color=0xFF0000
+        )
+        await msg.edit(embed=err_embed)
+
 # ========= Errors =========
 @bot.event
 async def on_command_error(ctx, error):
@@ -699,6 +815,68 @@ async def on_command_error(ctx, error):
         await ctx.send(embed=ui("⚠️ Error", str(error)))
     except:
         pass
+
+async def api_nowplaying(request):
+    try:
+        if not players:
+            return web.json_response({"playing": False})
+
+        p = list(players.values())[0]
+
+        if not p.current:
+            return web.json_response({"playing": False})
+
+        played = p.progress()
+        total = p.current.duration or 0
+        frac = played / total if total else 0
+
+        return web.json_response({
+            "playing": True,
+            "title": p.current.title,
+            "video_id": p.current.video_id,
+            "thumbnail": p.current.thumb,
+            "requested_by": p.current.requested_by_id,
+            "played": played,
+            "duration": total,
+            "progress": frac
+        })
+
+    except Exception as e:
+        return web.json_response({"error": str(e)})
+
+
+async def api_status(request):
+    up = get_uptime_sec()
+    total, used, free = get_mem()
+    l1, l5, l15 = get_load()
+    temp = get_temp()
+
+    return web.json_response({
+        "uptime": up,
+        "ram": {
+            "total": total,
+            "used": used,
+            "free": free
+        },
+        "load": {
+            "1m": l1,
+            "5m": l5,
+            "15m": l15
+        },
+        "cpu_temp": temp
+    })
+
+
+async def start_api():
+    app = web.Application()
+    app.router.add_get("/api/np", api_nowplaying)
+    app.router.add_get("/api/stats", api_status)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", API_PORT)
+    await site.start()
+    print(f"[API] Running on http://0.0.0.0:{API_PORT}")
 
 # ========= Run =========
 bot.run(TOKEN)
