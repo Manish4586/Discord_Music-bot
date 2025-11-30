@@ -45,6 +45,7 @@ COMMAND_PREFIX = "!"
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
+intents.members = True
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 
 START_TIME = time.time()
@@ -206,9 +207,21 @@ class Player:
             await self.voice.move_to(ch)
 
     def progress(self):
-        if not self.start_t: return 0
-        if self.pause_t: return self.pause_t - self.start_t - self.paused_accum
-        return time.time() - self.start_t - self.paused_accum
+        if not self.current or self.start_t is None:
+           return 0.0
+
+        if self.pause_t:
+           played = self.pause_t - self.start_t - self.paused_accum
+        else:
+           played = time.time() - self.start_t - self.paused_accum
+
+        if played is None or played < 0:
+           played = 0.0
+
+        if self.current.duration:
+           played = min(played, self.current.duration)
+
+           return float(played)
 
     async def loop(self, ctx):
         while True:
@@ -250,6 +263,9 @@ class Player:
             while self.voice and (self.voice.is_playing() or self.voice.is_paused()):
                 await asyncio.sleep(0.5)
 
+        self.start_t = None
+        self.pause_t = None
+        self.paused_accum = 0
         self.current = None
         self.panel = None
 
@@ -819,19 +835,36 @@ async def on_command_error(ctx, error):
 async def api_nowplaying(request):
     try:
         if not players:
-            return web.json_response({"playing": False})
+            return web.json_response({
+            "status": "Nothing playing",
+            "icon": "🎵"
+          })
 
         p = list(players.values())[0]
 
         if not p.current:
-            return web.json_response({"playing": False})
+            return web.json_response({
+            "status": "Nothing playing",
+            "icon": "🎵"
+          })
+
+        if p.voice and p.voice.is_paused():
+            state = "paused"
+            icon = "⏸️"
+        elif p.voice and p.voice.is_playing():
+            state = "playing"
+            icon = "▶️"
+        else:
+            state = "Nothing playing"
+            icon = "🎵"
 
         played = p.progress()
         total = p.current.duration or 0
         frac = played / total if total else 0
 
         return web.json_response({
-            "playing": True,
+            "status": state,
+            "icon": icon,
             "title": p.current.title,
             "video_id": p.current.video_id,
             "thumbnail": p.current.thumb,
