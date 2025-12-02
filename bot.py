@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from aiohttp import web
 import subprocess
 import asyncio
+import urllib.parse
 
 API_PORT = 8810
 
@@ -510,6 +511,19 @@ async def play(ctx,*,query):
         with YoutubeDL({"quiet":True}) as y:
             info = y.extract_info(f"ytsearch1:{query}",download=False)
         query = info["entries"][0]["webpage_url"]
+    if "list=RD" in query:
+        parsed = urllib.parse.urlparse(query)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "v" in qs:
+            video_id = qs["v"][0]
+            query = f"https://www.youtube.com/watch?v={video_id}"
+            await ctx.send(embed=ui("⚠️ Mix/Radio Auto-Fixed",
+                "You provided a YouTube Mix/Radio link.\n\nUsing the main video instead."))
+        else:
+            return await ctx.send(embed=ui(
+                "🚫 Unsupported Link",
+                "YouTube Mix/Radio playlists cannot be played.\nProvide a normal YouTube video URL."
+            ))
     track = await build_track(ctx, query, ctx.author.id)
     p.queue.append(track)
     if not p.voice.is_playing() and not p.voice.is_paused():
