@@ -452,7 +452,7 @@ async def on_voice_state_update(member, before, after):
 
         if len(real_users) == 0:
             await p.voice.disconnect()
-            players.clear()
+            players.pop(p.gid, None)
 
 @bot.listen("on_message")
 async def warn_uppercase_commands(msg: discord.Message):
