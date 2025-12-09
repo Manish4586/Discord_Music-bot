@@ -199,6 +199,8 @@ class Player:
         self.last_paused_position = 0
 
     async def ensure_voice(self, ctx):
+        if self.voice and self.voice.is_connected():
+            return
         if not ctx.author.voice:
             raise commands.CommandError("Join a voice channel first.")
         ch = ctx.author.voice.channel
@@ -421,14 +423,36 @@ async def cleanup_cache():
 async def _wait_ready2():
     await bot.wait_until_ready()
 
+@tasks.loop(minutes=10)
+async def cleanup_search_cache():
+    search_results.clear()
+
+@cleanup_search_cache.before_loop
+async def _wait_ready3():
+    await bot.wait_until_ready()
+
 # ========= Events =========
 @bot.event
 async def on_ready():
     print("Logged in as", bot.user)
     update_panels_and_tick_time.start()
+    cleanup_search_cache.start()
     await start_api()
     cleanup_cache.start()
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="YouTube Music"))
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    for p in list(players.values()):
+        if not p.voice or not p.voice.is_connected():
+            continue
+
+        vc = p.voice.channel
+        real_users = [m for m in vc.members if not m.bot]
+
+        if len(real_users) == 0:
+            await p.voice.disconnect()
+            players.clear()
 
 @bot.listen("on_message")
 async def warn_uppercase_commands(msg: discord.Message):
@@ -518,12 +542,16 @@ async def play(ctx,*,query):
             video_id = qs["v"][0]
             query = f"https://www.youtube.com/watch?v={video_id}"
             await ctx.send(embed=ui("⚠️ Mix/Radio Auto-Fixed",
-                "You provided a YouTube Mix/Radio link.\n\nUsing the main video instead."))
+                "You provided a YouTube Mix/Radio link.\n\nUsing the main video instead."),
+            delete_after=8
+            )
         else:
             return await ctx.send(embed=ui(
                 "🚫 Unsupported Link",
                 "YouTube Mix/Radio playlists cannot be played.\nProvide a normal YouTube video URL."
-            ))
+            ),
+            delete_after=8
+            )
     track = await build_track(ctx, query, ctx.author.id)
     p.queue.append(track)
     if not p.voice.is_playing() and not p.voice.is_paused():
@@ -914,10 +942,63 @@ async def api_status(request):
     })
 
 
+def _get_default_interface():
+    with open("/proc/net/route") as f:
+        for line in f.readlines()[1:]:
+            fields = line.strip().split()
+            if fields[1] == "00000000":
+                return fields[0]
+    return None
+
+
+INTERFACE = _get_default_interface()
+
+
+def _read_net():
+    with open("/proc/net/dev", "r") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        if INTERFACE and INTERFACE in line:
+            data = line.split(":")[1].split()
+            rx = int(data[0])
+            tx = int(data[8])
+            return rx, tx
+
+    return 0, 0
+
+
+def _format_bytes(b):
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if b < 1024:
+            return f"{b:.2f} {unit}"
+        b /= 1024
+    return f"{b:.2f} PB"
+
+
+async def get_network_stats():
+    rx1, tx1 = _read_net()
+    await asyncio.sleep(1)
+    rx2, tx2 = _read_net()
+
+    down_speed = rx2 - rx1
+    up_speed   = tx2 - tx1
+
+    return {
+        "total_download": _format_bytes(rx2),
+        "total_upload": _format_bytes(tx2),
+        "download_speed": _format_bytes(down_speed) + "/s",
+        "upload_speed": _format_bytes(up_speed) + "/s"
+    }
+
+async def api_net(request):
+    return web.json_response(await get_network_stats())
+
 async def start_api():
     app = web.Application()
     app.router.add_get("/api/np", api_nowplaying)
     app.router.add_get("/api/stats", api_status)
+    app.router.add_get("/api/net", api_net)
 
     runner = web.AppRunner(app)
     await runner.setup()
