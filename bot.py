@@ -201,9 +201,12 @@ class Player:
     async def ensure_voice(self, ctx):
         if self.voice and self.voice.is_connected():
             return
+
         if not ctx.author.voice:
             raise commands.CommandError("Join a voice channel first.")
+
         ch = ctx.author.voice.channel
+
         if not self.voice:
             self.voice = await ch.connect(self_deaf=True)
         elif self.voice.channel != ch:
@@ -211,35 +214,38 @@ class Player:
 
     def progress(self):
         if not self.current or self.start_t is None:
-           return 0.0
+            return 0.0
 
         if self.pause_t:
-           played = self.pause_t - self.start_t - self.paused_accum
+            played = self.pause_t - self.start_t - self.paused_accum
         else:
-           played = time.time() - self.start_t - self.paused_accum
+            played = time.time() - self.start_t - self.paused_accum
 
         if played is None or played < 0:
-           played = 0.0
+            played = 0.0
 
         if self.current.duration:
-           played = min(played, self.current.duration)
+            played = min(played, self.current.duration)
 
-           return float(played)
+        return float(played)
 
     async def loop(self, ctx):
         while True:
             if self.repeat_mode == 1 and self.current:
                 track = self.current
+
             elif self.queue:
                 track = self.queue.pop(0)
                 self.current = track
                 self.history.append(track)
                 add_user_song(track.requested_by_id)
                 add_song_play(track.video_id, track.title, track.requested_by_id)
+
             elif self.repeat_mode == 2 and self.history:
                 self.queue = self.history.copy()
                 self.history = []
                 continue
+
             else:
                 break
 
@@ -248,23 +254,49 @@ class Player:
             self.paused_accum = 0
 
             await self.ensure_voice(ctx)
-            self.voice.play(discord.FFmpegPCMAudio(track.file))
+            self.voice.play(
+                discord.FFmpegPCMAudio(
+                    track.file,
+                    options="-vn -af equalizer=f=63:t=q:w=3:g=4,equalizer=f=24:t=q:w=3:g=5,treble=g=-3"
+                )
+            )
 
             try:
-                await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=track.title))
+                await bot.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.listening,
+                        name=track.title
+                    )
+                )
             except:
                 pass
 
             if self.panel:
-                try: await self.panel.delete()
-                except: pass
+                try:
+                    await self.panel.delete()
+                except:
+                    pass
 
-            embed = ui("▶️ Now Playing", f"**{track.title}**\nRequested by <@{track.requested_by_id}>")
+            embed = ui(
+                "▶️ Now Playing",
+                f"**{track.title}**\nRequested by <@{track.requested_by_id}>"
+            )
             embed.set_thumbnail(url=track.thumb)
             self.panel = await ctx.send(embed=embed)
 
             while self.voice and (self.voice.is_playing() or self.voice.is_paused()):
                 await asyncio.sleep(0.5)
+
+        if self.panel:
+            try:
+                finished_embed = ui(
+                    "⏹️ Playback Finished",
+                    "No more songs in the queue."
+                )
+                finished_embed.set_thumbnail(url=None)
+                await self.panel.edit(embed=finished_embed)
+            except:
+                pass
 
         self.start_t = None
         self.pause_t = None
@@ -273,7 +305,12 @@ class Player:
         self.panel = None
 
         try:
-            await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="YouTube Music"))
+            await bot.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.listening,
+                    name="YouTube Music"
+                )
+            )
         except:
             pass
 
@@ -473,6 +510,15 @@ async def warn_uppercase_commands(msg: discord.Message):
             delete_after=8
         )
 
+def parse_spotify_track(url: str):
+    """
+    Extract Spotify track ID from URL
+    Example:
+    https://open.spotify.com/track/6TOeOjAKDOxJon6geucX92
+    """
+    m = re.search(r"open\.spotify\.com/track/([A-Za-z0-9]+)", url)
+    return m.group(1) if m else None
+
 # ========= Commands =========
 @bot.command()
 async def help(ctx):
@@ -530,6 +576,23 @@ async def play(ctx,*,query):
         arr = search_results[ctx.author.id]
         if 0 <= i < len(arr):
             query = arr[i]["webpage_url"]
+
+    if "open.spotify.com/track" in query:
+        track_id = parse_spotify_track(query)
+
+        if not track_id:
+            return await ctx.send(embed=ui("⚠️ Invalid Spotify link"))
+
+        with YoutubeDL({"quiet": True}) as y:
+            info = y.extract_info(
+                f"ytsearch1:{track_id}",
+                download=False
+            )
+
+        if not info.get("entries"):
+            return await ctx.send(embed=ui("⚠️ Track not found on YouTube"))
+
+        query = info["entries"][0]["webpage_url"]
 
     if not YOUTUBE_URL_RE.search(query):
         with YoutubeDL({"quiet":True}) as y:
@@ -784,11 +847,20 @@ async def leaderboard_cmd(ctx):
         (int(uid), data.get("time", 0.0), data.get("songs", 0))
         for uid, data in STORED.get("users", {}).items()
     ]
+
     users_sorted = sorted(users, key=lambda x: x[1], reverse=True)[:10]
-    user_lines = [
-        f"**{i}.** <@{uid}> — {fmt_time(sec)} • {songs} songs"
-        for i, (uid, sec, songs) in enumerate(users_sorted, 1)
-    ]
+
+    user_lines = []
+    for i, (uid, sec, songs) in enumerate(users_sorted, 1):
+        try:
+            user = await bot.fetch_user(uid)
+            name = user.name
+        except:
+            name = f"UnknownUser({uid})"
+
+        user_lines.append(
+            f"**{i}.** {name} — {fmt_time(sec)} • {songs} songs"
+        )
 
     # Top Songs by **unique listeners**
     songs = []
@@ -798,6 +870,7 @@ async def leaderboard_cmd(ctx):
         songs.append((vid, title, unique_users))
 
     songs_sorted = sorted(songs, key=lambda x: x[2], reverse=True)[:10]
+
     song_lines = [
         f"**{i}.** {title} — {unique} unique listeners"
         for i, (_, title, unique) in enumerate(songs_sorted, 1)
@@ -805,6 +878,7 @@ async def leaderboard_cmd(ctx):
 
     desc = "**Top Users (Time Listened):**\n" + ("\n".join(user_lines) or "_no data_")
     desc += "\n\n**Top Songs (Unique Listeners):**\n" + ("\n".join(song_lines) or "_no data_")
+
     await ctx.send(embed=ui("🏆 Leaderboard", desc))
 
 @bot.command()
@@ -812,40 +886,44 @@ async def ping(ctx):
     embed = ui("🏓 Pong!", "Running ping & speed test… please wait ⏳")
     msg = await ctx.send(embed=embed)
 
-    await asyncio.sleep(0.5)
-
     try:
+        # no more speedtest-cli
         proc = await asyncio.create_subprocess_exec(
-            "speedtest-cli",
-            "--simple",
+            "speedtest",
+            "--accept-license",
+            "--accept-gdpr",
+            "-f", "json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
         stdout_b, stderr_b = await proc.communicate()
 
-        stdout = stdout_b.decode("utf-8", errors="ignore")
-        stderr = stderr_b.decode("utf-8", errors="ignore")
+        if proc.returncode != 0:
+            raise Exception(stderr_b.decode("utf-8", errors="ignore"))
 
-        if stderr:
-            raise Exception(stderr)
+        data = json.loads(stdout_b.decode("utf-8", errors="ignore"))
 
-        ping_ms = "?"
-        download = "?"
-        upload = "?"
+        ping_ms = f"{data['ping']['latency']:.2f} ms"
 
-        for line in stdout.splitlines():
-            if line.startswith("Ping:"):
-                ping_ms = line.replace("Ping:", "").strip()
-            elif line.startswith("Download:"):
-                download = line.replace("Download:", "").strip()
-            elif line.startswith("Upload:"):
-                upload = line.replace("Upload:", "").strip()
+        download_mbps = data["download"]["bandwidth"] * 8 / 1_000_000
+        upload_mbps   = data["upload"]["bandwidth"] * 8 / 1_000_000
+
+        download = f"{download_mbps:.2f} Mbps"
+        upload   = f"{upload_mbps:.2f} Mbps"
+
+        isp = data.get("isp", "Unknown ISP")
+        server = data.get("server", {}).get("name", "Unknown Server")
+        location = data.get("server", {}).get("location", "")
+        packet_loss = data.get("packetLoss", 0)
 
         result_text = (
             f"🏓 **Ping:** `{ping_ms}`\n"
             f"⬇️ **Download:** `{download}`\n"
-            f"⬆️ **Upload:** `{upload}`\n"
+            f"⬆️ **Upload:** `{upload}`\n\n"
+            f"📡 **ISP:** `{isp}`\n"
+            f"🗄️ **Server:** `{server} {location}`\n"
+            f"📦 **Packet Loss:** `{packet_loss}%`"
         )
 
         final_embed = ui(
