@@ -197,6 +197,7 @@ class Player:
         self.paused_accum = 0
         self.last_paused_track = None
         self.last_paused_position = 0
+        self.play_id = 0
 
     async def ensure_voice(self, ctx):
         if self.voice and self.voice.is_connected():
@@ -254,10 +255,11 @@ class Player:
             self.paused_accum = 0
 
             await self.ensure_voice(ctx)
+            if self.play_id != track.play_id:
+                return
             self.voice.play(
                 discord.FFmpegPCMAudio(
-                    track.file,
-                    options="-vn -af equalizer=f=63:t=q:w=3:g=4,equalizer=f=24:t=q:w=3:g=5,treble=g=-3"
+                    track.file
                 )
             )
 
@@ -564,6 +566,8 @@ async def search(ctx,*,query):
 @bot.command()
 async def play(ctx,*,query):
     p = getp(ctx.guild)
+    p.play_id +=1
+    my_play_id = p.play_id
     if not ctx.voice_client:
         if not ctx.author.voice:
             return await ctx.send(embed=ui("⚠️ Join voice first"))
@@ -616,6 +620,9 @@ async def play(ctx,*,query):
             delete_after=8
             )
     track = await build_track(ctx, query, ctx.author.id)
+    if my_play_id != p.play_id:
+        return
+    track.play_id = my_play_id
     p.queue.append(track)
     if not p.voice.is_playing() and not p.voice.is_paused():
         await p.loop(ctx)
@@ -649,10 +656,20 @@ async def prev(ctx):
 @bot.command()
 async def stop(ctx):
     p = getp(ctx.guild)
+
+    p.play_id += 1
+
     p.queue.clear()
     p.history.clear()
     p.repeat_mode = 0
-    if p.voice: p.voice.stop()
+
+    if p.voice:
+        p.voice.stop()
+    p.current = None
+    p.start_t = None
+    p.pause_t = None
+    p.paused_accum = 0
+
     await ctx.send(embed=ui("🛑 Stopped", "Queue cleared."))
 
 @bot.command(name="s")
